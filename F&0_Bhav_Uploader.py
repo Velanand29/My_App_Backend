@@ -1,12 +1,11 @@
-import time
-import pandas as pd
+from flask import Flask, request, jsonify
 from sqlalchemy import create_engine
+import pandas as pd
 from datetime import date, timedelta
 from jugaad_data.nse import bhavcopy_fo_save
-import logging
+import time
 
-# Configure logging
-logging.basicConfig(filename='data_update.log', level=logging.INFO, format='%(asctime)s - %(message)s')
+app = Flask(__name__)
 
 # Function to validate if a given date is not a weekend (Saturday or Sunday)
 def is_weekday(input_date):
@@ -21,97 +20,75 @@ def date_range(start_date, end_date):
 
 # Function to download data for a specific date
 def download_data_for_date(target_date):
-    # Generate the file name based on the date and format
+    # Update with your file path
     file_name = f"fo{target_date.strftime('%d%b%Y')}bhav.csv"
-    file_path = rf"C:\Users\anand\OneDrive\Documents\BHAV COPY\{file_name}"
+    file_path = f"C:\\Users\\anand\\OneDrive\\Documents\\BHAV COPY\\{file_name}"
 
     # Call bhavcopy_fo_save to fetch data for the desired date
-    save_directory = rf"C:\Users\anand\OneDrive\Documents\BHAV COPY"
+    save_directory = f"C:\\Users\\anand\\OneDrive\\Documents\\BHAV COPY"
     try:
         bhavcopy_fo_save(target_date, save_directory)
-        print(f"Bhavcopy for {target_date} saved to {save_directory}")
+        return file_path  # Return the file path
     except Exception as e:
-        print(f"An error occurred while saving Bhav copy data: {str(e)}")
-        logging.error(f"Error while saving Bhav copy data: {str(e)}")
+        return str(e)
 
-    # Wait for 5 seconds to ensure the file is downloaded
-    time.sleep(5)
-
+# Define an API route for data upload
+@app.route('/api/upload-data', methods=['POST'])
+def upload_data():
     try:
-        # Read the CSV file into a DataFrame
-        df = pd.read_csv(file_path)
-        return df
-    except Exception as e:
-        print(f"An error occurred while processing the CSV file: {str(e)}")
-        logging.error(f"Error while processing the CSV file: {str(e)}")
-        return None
+        # Get the start date and end date from the request
+        start_date_str = request.form.get('start_date')
+        end_date_str = request.form.get('end_date')
 
-# Input for the date range
-while True:
-    try:
-        start_date_str = input("Enter the start date (YYYY-MM-DD): ")
-        end_date_str = input("Enter the end date (YYYY-MM-DD): ")
-        
         start_date = date.fromisoformat(start_date_str)
         end_date = date.fromisoformat(end_date_str)
 
-        if start_date <= end_date:
-            break
-        else:
-            print("End date should be greater than or equal to the start date.")
-    except ValueError:
-        print("Invalid date format. Please use YYYY-MM-DD.")
+        # Validate the date range
+        if start_date > end_date:
+            return jsonify({'message': 'End date should be greater than or equal to the start date'}), 400
 
-# Define the MySQL database connection parameters
-db_username = 'root'
-db_password = '#Trader1429'
-db_host = 'localhost'
-new_database_name = 'FnO_Data'  # Update the database name
+        # Define MySQL database connection parameters
+        db_username = 'root'
+        db_password = '#Trader1429'
+        db_host = 'localhost'
+        new_database_name = 'FnO_Data'  # Update the database name
 
-# Create the MySQL database connection URL with the new database name
-database_url = f"mysql+pymysql://{db_username}:{db_password}@{db_host}/{new_database_name}"
+        # Create the MySQL database connection URL with the new database name
+        database_url = f"mysql+pymysql://{db_username}:{db_password}@{db_host}/{new_database_name}"
 
-# Create a list to store the dataframes for each date
-dataframes = []
+        # Create a list to store the dataframes for each date
+        dataframes = []
 
-# Process data for dates within the specified range
-for single_date in date_range(start_date, end_date):
-    if is_weekday(single_date):
-        df = download_data_for_date(single_date)
-        if df is not None:
-            dataframes.append(df)
+        # Process data for dates within the specified range
+        for single_date in date_range(start_date, end_date):
+            if is_weekday(single_date):
+                file_path = download_data_for_date(single_date)
+                if file_path:
+                    df = pd.read_csv(file_path)
+                    dataframes.append(df)
 
-# Check if start and end dates are the same
-if start_date == end_date and is_weekday(start_date):
-    df = download_data_for_date(start_date)
-    if df is not None:
-        dataframes.append(df)
+        # Check if start and end dates are the same
+        if start_date == end_date and is_weekday(start_date):
+            file_path = download_data_for_date(start_date)
+            if file_path:
+                df = pd.read_csv(file_path)
+                dataframes.append(df)
 
-# Continue with your code to merge and update the data in the database
+        # Continue with your code to merge and update the data in the database
+        if dataframes:
+            combined_data = pd.concat(dataframes, ignore_index=True)
+            engine = create_engine(database_url)
+            query = "SELECT * FROM options_data"
+            existing_data = pd.read_sql(query, con=engine)
+            combined_data = pd.concat([existing_data, combined_data], ignore_index=True)
+            combined_data.to_sql('options_data', con=engine, if_exists='replace', index=False)
+            engine.dispose()
+            return jsonify({'message': 'Data has been successfully updated in the database'}), 200
 
-if dataframes:
-    # Concatenate dataframes into one
-    combined_data = pd.concat(dataframes, ignore_index=True)
+        return jsonify({'message': 'No data to update'}), 200
 
-    try:
-        # Create a database connection
-        engine = create_engine(database_url)
-
-        # Fetch existing data from the database
-        query = "SELECT * FROM options_data"
-        existing_data = pd.read_sql(query, con=engine)
-
-        # Append the new data to the existing data
-        combined_data = pd.concat([existing_data, combined_data], ignore_index=True)
-
-        # Replace the data in the database with the combined data
-        combined_data.to_sql('options_data', con=engine, if_exists='replace', index=False)
-
-        # Close the database connection
-        engine.dispose()
-
-        print("Data has been successfully updated in the database.")
-        logging.info("Data updated in the database.")
     except Exception as e:
-        print(f"An error occurred while updating the database: {str(e)}")
-        logging.error(f"Error while updating the database: {str(e)}")
+        return jsonify({'message': f'An error occurred: {str(e)}'}), 500
+
+if __name__ == '__main__':
+    app.run(debug=True)
